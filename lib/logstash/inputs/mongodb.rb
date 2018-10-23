@@ -73,6 +73,9 @@ class LogStash::Inputs::MongoDB < LogStash::Inputs::Base
   # The default, `1`, means send a message every second.
   config :interval, :validate => :number, :default => 1
 
+  config :delay, :validate => :number, :default => 5
+  config :delay_max, :validate => :number, :default => 300
+
   SINCE_TABLE = :since_table
 
   public
@@ -231,8 +234,8 @@ class LogStash::Inputs::MongoDB < LogStash::Inputs::Base
   end
 
   def run(queue)
-    sleep_min = 0.01
-    sleep_max = 5
+    sleep_min = @delay
+    sleep_max = @delay_max
     sleeptime = sleep_min
 
     @logger.debug("Tailing MongoDB")
@@ -258,6 +261,7 @@ class LogStash::Inputs::MongoDB < LogStash::Inputs::Base
           end
           cursor = get_cursor_for_collection(@mongodb, collection_name, last_id_object, batch_size)
           cursor.each do |doc|
+            sleeptime = sleep_min
             # logdate = DateTime.parse(doc['_id'].generation_time.to_s)
             logdate = DateTime.parse(doc['end'].to_s)
             event = LogStash::Event.new("host" => @host)
