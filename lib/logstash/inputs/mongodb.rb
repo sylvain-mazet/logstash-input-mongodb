@@ -146,9 +146,10 @@ class LogStash::Inputs::MongoDB < LogStash::Inputs::Base
   public
   def get_cursor_for_collection(mongodb, mongo_collection_name, last_id_object, batch_size)
     collection = mongodb.collection(mongo_collection_name)
+    @logger.debug("cursor for collection ",mongo_collection_name)
     # Need to make this sort by date in object id then get the first of the series
     # db.events_20150320.find().limit(1).sort({ts:1})
-    return collection.find({:_id => {:$gt => last_id_object}}).limit(batch_size)
+    return collection.find({:end => {:$gt => last_id_object}}).limit(batch_size)
   end
 
   public
@@ -197,22 +198,29 @@ class LogStash::Inputs::MongoDB < LogStash::Inputs::Base
     @logger.debug("Raw Hash: #{my_hash}")
     if my_hash.respond_to? :each
       my_hash.each do |k1,v1|
+        @logger.debug("Flattening "+k1.to_s+" value "+v1.to_s)
         if v1.is_a?(Hash)
+          @logger.debug("   is a hash")
           v1.each do |k2,v2|
             if v2.is_a?(Hash)
-              # puts "Found a nested hash"
+              @logger.debug("Found a nested hash "+k2.to_s+"   "+v2.to_s)
               result = flatten(v2)
               result.each do |k3,v3|
                 new_hash[k1.to_s+"_"+k2.to_s+"_"+k3.to_s] = v3
               end
               # puts "result: "+result.to_s+" k2: "+k2.to_s+" v2: "+v2.to_s
             else
+              @logger.debug("Found a nested but not hash "+k2+"   "+v2)
               new_hash[k1.to_s+"_"+k2.to_s] = v2
             end
           end
         else
+          @logger.debug("   is not a hash")
+          @logger.debug("     to string key "+k1.to_s)
+          @logger.debug("     to string value "+v1.to_s)
           # puts "Key: "+k1.to_s+" is not a hash"
           new_hash[k1.to_s] = v1
+          @logger.debug("OK")
         end
       end
     else
@@ -236,7 +244,7 @@ class LogStash::Inputs::MongoDB < LogStash::Inputs::Base
           collection_name = collection[:name]
           @logger.debug("collection_data is: #{@collection_data}")
           last_id = @collection_data[index][:last_id]
-          #@logger.debug("last_id is #{last_id}", :index => index, :collection => collection_name)
+          @logger.debug("last_id is #{last_id}", :index => index, :collection => collection_name)
           # get batch of events starting at the last_place if it is set
 
 
@@ -250,18 +258,20 @@ class LogStash::Inputs::MongoDB < LogStash::Inputs::Base
           end
           cursor = get_cursor_for_collection(@mongodb, collection_name, last_id_object, batch_size)
           cursor.each do |doc|
-            logdate = DateTime.parse(doc['_id'].generation_time.to_s)
+            # logdate = DateTime.parse(doc['_id'].generation_time.to_s)
+            logdate = DateTime.parse(doc['end'].to_s)
             event = LogStash::Event.new("host" => @host)
             decorate(event)
             event.set("logdate",logdate.iso8601.force_encoding(Encoding::UTF_8))
             log_entry = doc.to_h.to_s
-            log_entry['_id'] = log_entry['_id'].to_s
+            log_entry['end'] = log_entry['end'].to_s
             event.set("log_entry",log_entry.force_encoding(Encoding::UTF_8))
             event.set("mongo_id",doc['_id'].to_s)
+            @logger.debug("NEW DOCUMENT")
             @logger.debug("mongo_id: "+doc['_id'].to_s)
-            #@logger.debug("EVENT looks like: "+event.to_s)
+            @logger.debug("doc end : "+doc['end'].to_s)
+            @logger.debug("EVENT looks like: "+event.to_s)
             #@logger.debug("Sent message: "+doc.to_h.to_s)
-            #@logger.debug("EVENT looks like: "+event.to_s)
             # Extract the HOST_ID and PID from the MongoDB BSON::ObjectID
             if @unpack_mongo_id
               doc_hex_bytes = doc['_id'].to_s.each_char.each_slice(2).map {|b| b.join.to_i(16) }
@@ -286,7 +296,7 @@ class LogStash::Inputs::MongoDB < LogStash::Inputs::Base
 
               flat_doc.each do |k,v|
                 # Check for an integer
-                @logger.debug("key: #{k.to_s} value: #{v.to_s}")
+                @logger.debug("key: #{k.to_s} of type "+v.class.to_s+" value: #{v.to_s}")
                 if v.is_a? Numeric
                   event.set(k.to_s,v)
                 elsif v.is_a? Time
@@ -302,6 +312,8 @@ class LogStash::Inputs::MongoDB < LogStash::Inputs::Base
                   else
                     event.set(k.to_s, v)
                   end
+                elsif v.is_a? Array
+                  event.set(k.to_s, v)
                 else
                   if k.to_s  == "_id" || k.to_s == "tags"
                     event.set(k.to_s, v.to_s )
@@ -353,6 +365,22 @@ class LogStash::Inputs::MongoDB < LogStash::Inputs::Base
                   else
                     event.set(k, v.to_s)
                   end
+              end
+            elsif @parse_method == 'raw'
+              doc.each do |k,v|
+                if v.is_a? Numeric
+                  event.set(k, v.abs)
+                elsif v.is_a? Array
+                  new_array = []
+                  v.each do |hash|
+                    new_array << hash
+                  end
+                  event.set(k, new_array.to_json)
+                elsif v == "NaN"
+                  event.set(k, Float::NAN)
+                else
+                  event.set(k, v.to_s)
+                end
               end
             end
 
