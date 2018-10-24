@@ -73,15 +73,24 @@ class LogStash::Inputs::MongoDB < LogStash::Inputs::Base
   # The default, `1`, means send a message every second.
   config :interval, :validate => :number, :default => 1
 
+  # configurable delay between batches, when nothing comes in, 
+  # delay is *2, until delay_max
   config :delay, :validate => :number, :default => 5
   config :delay_max, :validate => :number, :default => 300
+
+  # the query to MongoDB, to which we will add the time field selection
+  # this is MongoShell like. Dunno how to pass Dates here......
+  config :query, :validate => :string, :default => " {1 :{ $gt : 0}} "
+
+  config :start_window, :validate => :string, :default => nil
+  config :end_window, :validate => :string, :default => nil
 
   SINCE_TABLE = :since_table
 
   public
-  def init_placeholder_table(sqlitedb)
+  def init_placeholder_table()
     begin
-      sqlitedb.create_table "#{SINCE_TABLE}" do
+      @sqlitedb.create_table "#{SINCE_TABLE}" do
         String :table
         Int :place
       end
@@ -91,51 +100,56 @@ class LogStash::Inputs::MongoDB < LogStash::Inputs::Base
   end
 
   public
-  def init_placeholder(sqlitedb, since_table, mongodb, mongo_collection_name)
-    @logger.debug("init placeholder for #{since_table}_#{mongo_collection_name}")
-    since = sqlitedb[SINCE_TABLE]
+  def init_placeholder(mongodb, mongo_collection_name)
+    @logger.debug("init placeholder for #{SINCE_TABLE}_#{mongo_collection_name}")
+    since = @sqlitedb[SINCE_TABLE]
     mongo_collection = mongodb.collection(mongo_collection_name)
 
-    first_entry = mongo_collection.find({}).sort(since_column => 1).limit(1).first
+    mongo_query = build_mongo_query(nil,@user_query)
+    first_entry = mongo_collection.find(mongo_query).sort(since_column => 1).limit(1).first
     first_entry_id = ''
     if since_type == 'id'
       first_entry_id = first_entry[since_column].to_s
     else
-      first_entry_id = first_entry[since_column].to_i
+      first_entry_id = (first_entry[since_column].to_f.round(3)*1000).to_i
     end
-    since.insert(:table => "#{since_table}_#{mongo_collection_name}", :place => first_entry_id)
-    @logger.info("init placeholder for #{since_table}_#{mongo_collection_name}: #{first_entry}")
+    since.insert(:table => "#{SINCE_TABLE}_#{mongo_collection_name}", :place => first_entry_id)
+    @logger.info("init placeholder for #{SINCE_TABLE}_#{mongo_collection_name}: #{first_entry}")
     return first_entry_id
   end
 
   public
-  def get_placeholder(sqlitedb, since_table, mongodb, mongo_collection_name)
-    since = sqlitedb[SINCE_TABLE]
-    x = since.where(:table => "#{since_table}_#{mongo_collection_name}")
+  def get_placeholder(mongodb, mongo_collection_name)
+    since = @sqlitedb[SINCE_TABLE]
+    x = since.where(:table => "#{SINCE_TABLE}_#{mongo_collection_name}")
     if x[:place].nil? || x[:place] == 0
-      first_entry_id = init_placeholder(sqlitedb, since_table, mongodb, mongo_collection_name)
-      @logger.debug("FIRST ENTRY ID for #{mongo_collection_name} is #{first_entry_id}")
+      first_entry_id = init_placeholder(mongodb, mongo_collection_name)
+      @logger.debug("FIRST ENTRY ID placeholder for #{mongo_collection_name} is #{first_entry_id}")
       return first_entry_id
     else
-      @logger.debug("placeholder already exists, it is #{x[:place]}")
-      return x[:place][:place]
+      @logger.debug("placeholder already exists, it is #{x[:place]}  -- returing "+Time.at(x[:place][:place].round(3).to_f/999.99).strftime("%Y %m %d - %H %M %S %L"))
+      return Time.at(x[:place][:place].round(3).to_f/999.99)
     end
   end
 
   public
-  def update_placeholder(sqlitedb, since_table, mongo_collection_name, place)
-    #@logger.debug("updating placeholder for #{since_table}_#{mongo_collection_name} to #{place}")
-    since = sqlitedb[SINCE_TABLE]
-    since.where(:table => "#{since_table}_#{mongo_collection_name}").update(:place => place)
+  def update_placeholder(mongo_collection_name, place)
+    #@logger.debug("updating placeholder for #{SINCE_TABLE}_#{mongo_collection_name} to #{place}")
+    since = @sqlitedb[SINCE_TABLE]
+    @logger.debug("new placeholder "+(place.round(3).to_f*1000).to_s+ " of type "+(place.round(3).to_f*1000).class.to_s)
+    since.where(:table => "#{SINCE_TABLE}_#{mongo_collection_name}").update(:place => place.round(3).to_f*1000
+
+
+    )
   end
 
   public
-  def get_all_tables(mongodb)
+  def get_all_tables()
     return @mongodb.collection_names
   end
 
   public
-  def get_collection_names(mongodb, collection)
+  def get_collection_names(collection)
     collection_names = []
     @mongodb.collection_names.each do |coll|
       if /#{collection}/ =~ coll
@@ -146,22 +160,41 @@ class LogStash::Inputs::MongoDB < LogStash::Inputs::Base
     return collection_names
   end
 
-  public
-  def get_cursor_for_collection(mongodb, mongo_collection_name, last_id_object, batch_size)
-    collection = mongodb.collection(mongo_collection_name)
-    @logger.debug("cursor for collection ",mongo_collection_name)
-    # Need to make this sort by date in object id then get the first of the series
-    # db.events_20150320.find().limit(1).sort({ts:1})
-    return collection.find({:end => {:$gt => last_id_object}}).limit(batch_size)
+  private
+  def build_mongo_query(last_id_object, user_query)
+    if last_id_object.nil?
+      querymongo = { :$and => [ {:end => {:$gt => @start_window_time}},
+                                {:end => {:$lt => @end_window_time}},
+                                user_query ]}
+    else
+      @logger.debug("building with a "+last_id_object.class.to_s+"  == "+last_id_object.to_s)
+      querymongo = { :$and => [ {:end => {:$gt => last_id_object}},
+                              {:end => {:$gt => @start_window_time}},
+                              {:end => {:$lt => @end_window_time}},
+                              user_query ]}
+    end
+    @logger.debug("Built mongo query "+querymongo.to_s)
+    return querymongo
   end
 
   public
-  def update_watched_collections(mongodb, collection, sqlitedb)
-    collections = get_collection_names(mongodb, collection)
+  def get_cursor_for_collection(mongodb, mongo_collection_name, last_id_object, batch_size, user_query)
+    @logger.debug("querying mongo collection name "+mongo_collection_name.to_s)
+    collection = mongodb.collection(mongo_collection_name)
+    # Need to make this sort by date in object id then get the first of the series
+    # db.events_20150320.find().limit(1).sort({ts:1})
+    @logger.debug("querying mongo collection "+collection.to_s)
+    querymongo = build_mongo_query(last_id_object, user_query)
+    @logger.debug("querying mongo with "+batch_size.to_s)
+    return collection.find(querymongo).limit(batch_size)
+  end
+
+  public
+  def update_watched_collections(mongodb, collection)
+    collections = get_collection_names(collection)
     collection_data = {}
     collections.each do |my_collection|
-      init_placeholder_table(sqlitedb)
-      last_id = get_placeholder(sqlitedb, since_table, mongodb, my_collection)
+      last_id = get_placeholder(mongodb, my_collection)
       if !collection_data[my_collection]
         collection_data[my_collection] = { :name => my_collection, :last_id => last_id }
       end
@@ -182,8 +215,6 @@ class LogStash::Inputs::MongoDB < LogStash::Inputs::Base
     @mongodb = conn.database
     @sqlitedb = Sequel.connect("jdbc:sqlite:#{placeholder_db_path}")
 
-    # Should check to see if there are new matching tables at a predefined interval or on some trigger
-    @collection_data = update_watched_collections(@mongodb, @collection, @sqlitedb)
   end # def register
 
   class BSON::OrderedHash
@@ -198,38 +229,38 @@ class LogStash::Inputs::MongoDB < LogStash::Inputs::Base
 
   def flatten(my_hash)
     new_hash = {}
-    @logger.debug("Raw Hash: #{my_hash}")
+    #@logger.debug("Raw Hash: #{my_hash}")
     if my_hash.respond_to? :each
       my_hash.each do |k1,v1|
-        @logger.debug("Flattening "+k1.to_s+" value "+v1.to_s)
+        #@logger.debug("Flattening "+k1.to_s+" value "+v1.to_s)
         if v1.is_a?(Hash)
-          @logger.debug("   is a hash")
+          #@logger.debug("   is a hash")
           v1.each do |k2,v2|
             if v2.is_a?(Hash)
-              @logger.debug("Found a nested hash "+k2.to_s+"   "+v2.to_s)
+              #@logger.debug("Found a nested hash "+k2.to_s+"   "+v2.to_s)
               result = flatten(v2)
               result.each do |k3,v3|
                 new_hash[k1.to_s+"_"+k2.to_s+"_"+k3.to_s] = v3
               end
               # puts "result: "+result.to_s+" k2: "+k2.to_s+" v2: "+v2.to_s
             else
-              @logger.debug("Found a nested but not hash "+k2+"   "+v2)
+              #@logger.debug("Found a nested but not hash "+k2+"   "+v2)
               new_hash[k1.to_s+"_"+k2.to_s] = v2
             end
           end
         else
-          @logger.debug("   is not a hash")
-          @logger.debug("     to string key "+k1.to_s)
-          @logger.debug("     to string value "+v1.to_s)
+          #@logger.debug("   is not a hash")
+          #@logger.debug("     to string key "+k1.to_s)
+          #@logger.debug("     to string value "+v1.to_s)
           # puts "Key: "+k1.to_s+" is not a hash"
           new_hash[k1.to_s] = v1
-          @logger.debug("OK")
+          #@logger.debug("OK")
         end
       end
     else
       @logger.debug("Flatten [ERROR]: hash did not respond to :each")
     end
-    @logger.debug("Flattened Hash: #{new_hash}")
+    #@logger.debug("Flattened Hash: #{new_hash}")
     return new_hash
   end
 
@@ -237,6 +268,25 @@ class LogStash::Inputs::MongoDB < LogStash::Inputs::Base
     sleep_min = @delay
     sleep_max = @delay_max
     sleeptime = sleep_min
+    batch_size = @batch_size
+
+    @user_query = JSON.parse(@query)
+    if ! (@user_query.is_a? Hash )
+        @logger.error("query must be a valid mongo shell query: "+@user_query)
+    end
+
+    @start_window_time = DateTime.strptime(@start_window,"%Y-%m-%d %H:%M:%S")
+    @logger.info("start of window "+@start_window_time.to_s)
+
+    @end_window_time = DateTime.strptime(@end_window,"%Y-%m-%d %H:%M:%S")
+    @logger.info("end of window date time "+@end_window_time.to_s)
+    @logger.info("end of window time      "+@end_window_time.to_time.to_s)
+    @logger.info("end of window time      "+@end_window_time.to_time.to_i.to_s)
+
+    init_placeholder_table()
+
+    # Should check to see if there are new matching tables at a predefined interval or on some trigger
+    @collection_data = update_watched_collections(@mongodb, @collection)
 
     @logger.debug("Tailing MongoDB")
     @logger.debug("Collection data is: #{@collection_data}")
@@ -247,7 +297,7 @@ class LogStash::Inputs::MongoDB < LogStash::Inputs::Base
           collection_name = collection[:name]
           @logger.debug("collection_data is: #{@collection_data}")
           last_id = @collection_data[index][:last_id]
-          @logger.debug("last_id is #{last_id}", :index => index, :collection => collection_name)
+          @logger.debug("last_id is #{last_id}   of class "+last_id.class.to_s, :index => index, :collection => collection_name)
           # get batch of events starting at the last_place if it is set
 
 
@@ -255,11 +305,11 @@ class LogStash::Inputs::MongoDB < LogStash::Inputs::Base
           if since_type == 'id'
             last_id_object = BSON::ObjectId(last_id)
           elsif since_type == 'time'
-            if last_id != ''
-              last_id_object = Time.at(last_id)
+            if ! last_id.is_a? Time
+              last_id_object = Time.at(last_id.round(3).to_f/1000.0)
             end
           end
-          cursor = get_cursor_for_collection(@mongodb, collection_name, last_id_object, batch_size)
+          cursor = get_cursor_for_collection(@mongodb, collection_name, last_id_object, batch_size, @user_query)
           cursor.each do |doc|
             sleeptime = sleep_min
             # logdate = DateTime.parse(doc['_id'].generation_time.to_s)
@@ -300,7 +350,7 @@ class LogStash::Inputs::MongoDB < LogStash::Inputs::Base
 
               flat_doc.each do |k,v|
                 # Check for an integer
-                @logger.debug("key: #{k.to_s} of type "+v.class.to_s+" value: #{v.to_s}")
+                #@logger.debug("key: #{k.to_s} of type "+v.class.to_s+" value: #{v.to_s}")
                 if v.is_a? Numeric
                   event.set(k.to_s,v)
                 elsif v.is_a? Time
@@ -400,10 +450,11 @@ class LogStash::Inputs::MongoDB < LogStash::Inputs::Base
             @collection_data[index][:last_id] = since_id
           end
           # Store the last-seen doc in the database
-          update_placeholder(@sqlitedb, since_table, collection_name, @collection_data[index][:last_id])
+          # add a millisecond to make sure we progress in time, this is not so robust.....
+          update_placeholder(collection_name, @collection_data[index][:last_id] + 1/1000.0)
         end
         @logger.debug("Updating watch collections")
-        @collection_data = update_watched_collections(@mongodb, @collection, @sqlitedb)
+        @collection_data = update_watched_collections(@mongodb, @collection)
 
         # nothing found in that iteration
         # sleep a bit
