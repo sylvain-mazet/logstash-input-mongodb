@@ -1,5 +1,6 @@
 #!/bin/bash
 
-sudo rm /etc/logstash/states/logstash_dev_v4_franck.db
-debug='--log.level debug'
-sudo -u logstash /usr/share/logstash/bin/logstash $debug  -f /home/smazet/scripts/context_1_connector_5.conf --path.settings /etc/logstash/ --path.data /tmp
+sudo rm -f /etc/logstash/states/logstash_tests_v4.db
+#debug='--log.level debug'
+file=/tmp/context_1_connector_3.conf
+sudo -u logstash /usr/share/logstash/bin/logstash $debug  -f $file --path.settings /etc/logstash/ --path.data /tmp

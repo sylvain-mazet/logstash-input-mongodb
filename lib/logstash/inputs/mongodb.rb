@@ -80,7 +80,7 @@ class LogStash::Inputs::MongoDB < LogStash::Inputs::Base
 
   # the query to MongoDB, to which we will add the time field selection
   # this is MongoShell like. Dunno how to pass Dates here......
-  config :query, :validate => :string, :default => " {1 :{ $gt : 0}} "
+  config :query, :validate => :string, :default => "{\"actionId\" :{ \"$gt\" : 0}} "
 
   config :start_window, :validate => :string, :default => nil
   config :end_window, :validate => :string, :default => nil
@@ -105,16 +105,23 @@ class LogStash::Inputs::MongoDB < LogStash::Inputs::Base
     since = @sqlitedb[SINCE_TABLE]
     mongo_collection = mongodb.collection(mongo_collection_name)
 
-    mongo_query = build_mongo_query(nil,@user_query)
-    first_entry = mongo_collection.find(mongo_query).sort(since_column => 1).limit(1).first
+    #mongo_query = build_mongo_query(nil,@user_query)
+    #first_entry_whole = mongo_collection.find(mongo_query).sort(since_column => 1).limit(1).first
+    first_entry_whole = nil
     first_entry_id = ''
-    if since_type == 'id'
-      first_entry_id = first_entry[since_column].to_s
+    if first_entry_whole.nil?
+      first_entry = DateTime.strptime("2012-01-01 00:00:00","%Y-%m-%d %H:%M:%S").to_time
     else
-      first_entry_id = (first_entry[since_column].to_f.round(3)*1000).to_i
+      first_entry = first_entry_whole[since_column]
+    end
+
+    if since_type == 'id'
+      first_entry_id = first_entry.to_s
+    else
+      first_entry_id = (first_entry.to_f.round(3)*1000).to_i
     end
     since.insert(:table => "#{SINCE_TABLE}_#{mongo_collection_name}", :place => first_entry_id)
-    @logger.info("init placeholder for #{SINCE_TABLE}_#{mongo_collection_name}: #{first_entry}")
+    @logger.info("init placeholder for #{SINCE_TABLE}_#{mongo_collection_name}: #{first_entry_id}")
     return first_entry_id
   end
 
@@ -178,7 +185,7 @@ class LogStash::Inputs::MongoDB < LogStash::Inputs::Base
   end
 
   public
-  def get_cursor_for_collection(mongodb, mongo_collection_name, last_id_object, batch_size, user_query)
+  def get_cursor_for_collection(mongodb, mongo_collection_name, since_column, last_id_object, batch_size, user_query)
     @logger.debug("querying mongo collection name "+mongo_collection_name.to_s)
     collection = mongodb.collection(mongo_collection_name)
     # Need to make this sort by date in object id then get the first of the series
@@ -186,7 +193,7 @@ class LogStash::Inputs::MongoDB < LogStash::Inputs::Base
     @logger.debug("querying mongo collection "+collection.to_s)
     querymongo = build_mongo_query(last_id_object, user_query)
     @logger.debug("querying mongo with "+batch_size.to_s)
-    return collection.find(querymongo).limit(batch_size)
+    return collection.find(querymongo).sort(since_column => 1).limit(batch_size)
   end
 
   public
@@ -309,7 +316,7 @@ class LogStash::Inputs::MongoDB < LogStash::Inputs::Base
               last_id_object = Time.at(last_id.round(3).to_f/1000.0)
             end
           end
-          cursor = get_cursor_for_collection(@mongodb, collection_name, last_id_object, batch_size, @user_query)
+          cursor = get_cursor_for_collection(@mongodb, collection_name, since_column, last_id_object, batch_size, @user_query)
           cursor.each do |doc|
             sleeptime = sleep_min
             # logdate = DateTime.parse(doc['_id'].generation_time.to_s)
@@ -437,6 +444,9 @@ class LogStash::Inputs::MongoDB < LogStash::Inputs::Base
                 end
               end
             end
+
+            event.set('start_window',@start_window)
+            event.set('end_window',@end_window)
 
             queue << event
 
