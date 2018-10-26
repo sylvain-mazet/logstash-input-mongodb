@@ -66,7 +66,7 @@ class LogStash::Inputs::MongoDB < LogStash::Inputs::Base
 
   config :unpack_mongo_id, :validate => :boolean, :default => false
 
-  # The message string to use in the event.
+  # The message string to use in the event. unused
   config :message, :validate => :string, :default => "Default message..."
 
   # Set how frequently messages should be sent.
@@ -134,8 +134,8 @@ class LogStash::Inputs::MongoDB < LogStash::Inputs::Base
       @logger.debug("FIRST ENTRY ID placeholder for #{mongo_collection_name} is #{first_entry_id}")
       return first_entry_id
     else
-      @logger.debug("placeholder already exists, it is #{x[:place]}  -- returing "+Time.at(x[:place][:place].round(3).to_f/999.99).strftime("%Y %m %d - %H %M %S %L"))
-      return Time.at(x[:place][:place].round(3).to_f/999.99)
+      @logger.debug("placeholder already exists, it is #{x[:place]}  -- returning "+Time.at(x[:place][:place].round(3).to_f/999.99999999999).strftime("%Y %m %d - %H %M %S %L %z"))
+      return Time.at(x[:place][:place].round(3).to_f/999.99999999999)
     end
   end
 
@@ -144,10 +144,7 @@ class LogStash::Inputs::MongoDB < LogStash::Inputs::Base
     #@logger.debug("updating placeholder for #{SINCE_TABLE}_#{mongo_collection_name} to #{place}")
     since = @sqlitedb[SINCE_TABLE]
     @logger.debug("new placeholder "+(place.round(3).to_f*1000).to_s+ " of type "+(place.round(3).to_f*1000).class.to_s)
-    since.where(:table => "#{SINCE_TABLE}_#{mongo_collection_name}").update(:place => place.round(3).to_f*1000
-
-
-    )
+    since.where(:table => "#{SINCE_TABLE}_#{mongo_collection_name}").update(:place => place.round(3).to_f*1000)
   end
 
   public
@@ -187,6 +184,7 @@ class LogStash::Inputs::MongoDB < LogStash::Inputs::Base
   public
   def get_cursor_for_collection(mongodb, mongo_collection_name, since_column, last_id_object, batch_size, user_query)
     @logger.debug("querying mongo collection name "+mongo_collection_name.to_s)
+    @logger.debug("querying with since column "+since_column+ " of class "+since_column.class.to_s)
     collection = mongodb.collection(mongo_collection_name)
     # Need to make this sort by date in object id then get the first of the series
     # db.events_20150320.find().limit(1).sort({ts:1})
@@ -457,6 +455,7 @@ class LogStash::Inputs::MongoDB < LogStash::Inputs::Base
               since_id = doc[since_column].to_i
             end
 
+            @logger.debug(" latest end seen  so far: "+since_id.to_s+"  Time "+Time.at(since_id).strftime("%Y %m %d - %H %M %S %L %z"))
             @collection_data[index][:last_id] = since_id
           end
           # Store the last-seen doc in the database
