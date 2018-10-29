@@ -32,6 +32,9 @@ class LogStash::Inputs::MongoDB < LogStash::Inputs::Base
   # This allows you to select the column you would like to sort on
   config :sort_on, :validate => :string, :default => "_id"
 
+  # This allows to retrieve only the selected fields
+  config :projection, :validate => :string, :default => nil
+
   # The collection to use. Is turned into a regex so 'events' will match 'events_20150227'
   # Example collection: events_20150227 or events_
   config :collection, :validate => :string, :required => true
@@ -161,7 +164,7 @@ class LogStash::Inputs::MongoDB < LogStash::Inputs::Base
     @logger.debug("querying mongo collection "+collection.to_s)
     querymongo = build_mongo_query(user_query)
     @logger.debug("querying mongo for "+batch_size.to_s+" documents after skipping "+skipper.to_s)
-    return collection.find(querymongo).sort(sort_col => 1).skip(skipper).limit(batch_size)
+    return collection.find(querymongo, :projection => @user_projection).sort(sort_col => 1).skip(skipper).limit(batch_size)
   end
 
   public
@@ -243,6 +246,13 @@ class LogStash::Inputs::MongoDB < LogStash::Inputs::Base
     sleep_max = @delay_max
     sleeptime = sleep_min
     batch_size = @batch_size
+
+
+    if @projection.nil?
+      @user_projection = {}
+    else
+      @user_projection = JSON.parse(@projection)
+    end
 
     @user_query = JSON.parse(@query)
     if ! (@user_query.is_a? Hash )
