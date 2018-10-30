@@ -342,10 +342,12 @@ class LogStash::Inputs::MongoDB < LogStash::Inputs::Base
                 else
                   if k.to_s  == "_id" || k.to_s == "tags"
                     event.set(k.to_s, v.to_s )
-                  end
-                  if (k.to_s == "tags") && (v.is_a? Array)
+                  elsif (k.to_s == "tags") && (v.is_a? Array)
                     event.set('tags',v)
+                  else
+                    event.set(k.to_s,v)
                   end
+
                 end
               end
             elsif @parse_method == 'dig'
