@@ -275,6 +275,12 @@ class LogStash::Inputs::MongoDB < LogStash::Inputs::Base
     @logger.debug("Tailing MongoDB")
     @logger.debug("Collection data is: #{@collection_data}")
 
+    perfFlatten = 0.0
+    perfDataMove = 0.0
+    perfSql = 0.0
+    perfPost = 0.0
+    startPerf = Time.now
+
     while true && !stop?
       begin
         @collection_data.each do |index, collection|
@@ -283,8 +289,13 @@ class LogStash::Inputs::MongoDB < LogStash::Inputs::Base
           last_id = @collection_data[index][:last_id]
           @logger.debug("last_id is #{last_id}   of class "+last_id.class.to_s, :index => index, :collection => collection_name)
 
+          startPerf = Time.now;
           cursor = get_cursor_for_collection(@mongodb, collection_name, @sort_on, last_id, batch_size, @user_query)
+          measurePerf = Time.now - startPerf
+          @logger.debug("Cursor get "+measurePerf.to_s+ "  s")
 
+          counter = 0
+          startPerf = Time.now;
           cursor.each do |doc|
             sleeptime = sleep_min
             event = LogStash::Event.new("host" => @host)
@@ -309,7 +320,9 @@ class LogStash::Inputs::MongoDB < LogStash::Inputs::Base
 
             if @parse_method == 'flatten'
               # Flatten the JSON so that the data is usable in Kibana
+              startFlatten = Time.now
               flat_doc = flatten(doc)
+              perfFlatten = perfFlatten + (Time.now - startFlatten).to_f
               # Check for different types of expected values and add them to the event
               if flat_doc['info_message'] && (flat_doc['info_message']  =~ /collection stats: .+/)
                 # Some custom stuff I'm having to do to fix formatting in past logs...
@@ -319,12 +332,13 @@ class LogStash::Inputs::MongoDB < LogStash::Inputs::Base
                 end
               end
 
+              startDataMove =Time.now
               flat_doc.each do |k,v|
                 # Check for an integer
                 #@logger.debug("key: #{k.to_s} of type "+v.class.to_s+" value: #{v.to_s}")
                 if v.is_a? Numeric
                   event.set(k.to_s,v)
-                elsif v.is_a? Time
+                elsif v.is_a? Time or v.is_a? DateTime
                   event.set(k.to_s,v.iso8601)
 
                 elsif v.is_a? String
@@ -350,6 +364,9 @@ class LogStash::Inputs::MongoDB < LogStash::Inputs::Base
 
                 end
               end
+
+              perfDataMove = perfDataMove + (Time.now - startDataMove).to_f
+
             elsif @parse_method == 'dig'
               # Dig into the JSON and flatten select elements
               doc.each do |k, v|
@@ -414,13 +431,26 @@ class LogStash::Inputs::MongoDB < LogStash::Inputs::Base
             event.set('start_window',@start_window)
             event.set('end_window',@end_window)
 
+            startPost = Time.now
             queue << event
+            perfPost = perfPost + (Time.now - startPost).to_f
 
-            # Store the skipper for this collection (in case of interrupt)
             @collection_data[index][:last_id] += 1
-            update_placeholder(collection_name, @collection_data[index][:last_id])
+
           end
+          startSql = Time.now
+          # Store the skipper for this collection (in case of interrupt)
+          update_placeholder(collection_name, @collection_data[index][:last_id])
+          perfSql = perfSql + ( Time.now - startSql).to_f
+
+          @logger.debug(" Perf flatten "+perfFlatten.to_s)
+          @logger.debug(" Perf data move  "+perfDataMove.to_s)
+          @logger.debug(" Perf post  "+perfPost.to_s)
+          @logger.debug(" Perf sql  "+perfSql.to_s)
         end
+        measurePerf = Time.now - startPerf
+        @logger.debug("Perf cursor loop "+measurePerf.to_s+ "  s")
+
         @logger.debug("Updating watch collections")
         @collection_data = update_watched_collections(@mongodb, @collection)
 
@@ -436,8 +466,12 @@ class LogStash::Inputs::MongoDB < LogStash::Inputs::Base
   end # def run
 
   def close
-    # If needed, use this to tidy up on shutdown
-    @logger.debug("Shutting down...")
+    # tidy up on shutdown
+    @logger.info('MongoDB Input plugin exiting on shutdown request...')
+    @collection_data.each do |index, collection|
+      collection_name = collection[:name]
+      update_placeholder(collection_name, @collection_data[index][:last_id])
+    end
   end
 
 end # class LogStash::Inputs::Example
