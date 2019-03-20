@@ -90,6 +90,7 @@ class LogStash::Inputs::MongoDB < LogStash::Inputs::Base
       @sqlitedb.create_table "#{SINCE_TABLE}" do
         String :table
         Int :place
+        DateTime :glide_start
       end
     rescue
       @logger.debug("since table already exists")
@@ -101,22 +102,23 @@ class LogStash::Inputs::MongoDB < LogStash::Inputs::Base
     @logger.debug("init placeholder for #{SINCE_TABLE}_#{mongo_collection_name}")
     since = @sqlitedb[SINCE_TABLE]
     first_entry_id = 0
-    since.insert(:table => "#{SINCE_TABLE}_#{mongo_collection_name}", :place => first_entry_id)
+    since.insert(:table => "#{SINCE_TABLE}_#{mongo_collection_name}", :place => first_entry_id, :glide_start => @start_window_time)
     @logger.info("init placeholder for #{SINCE_TABLE}_#{mongo_collection_name}: #{first_entry_id}")
-    return first_entry_id
+    return @start_window_time
   end
 
   public
   def get_placeholder(mongodb, mongo_collection_name)
     since = @sqlitedb[SINCE_TABLE]
     x = since.where(:table => "#{SINCE_TABLE}_#{mongo_collection_name}")
-    if x[:place].nil?
-      first_entry_id = init_placeholder(mongodb, mongo_collection_name)
-      @logger.debug("FIRST ENTRY ID placeholder for #{mongo_collection_name} is #{first_entry_id}")
-      return first_entry_id
+    if x[:glide_start].nil?
+      glide_start = init_placeholder(mongodb, mongo_collection_name)
+      @logger.debug("FIRST DATE placeholder for #{mongo_collection_name} is #{glide_start}")
+      return glide_start
     else
-      @logger.debug("placeholder already exists, it is #{x[:place]}")
-      return x[:place][:place]
+      @logger.debug("placeholder already exists, it is #{x[:glide_start]}")
+      new_start = DateTime.strptime(x[:glide_start][:glide_start],"%Y-%m-%dT%H:%M:%S")
+      return new_start
     end
   end
 
@@ -124,8 +126,9 @@ class LogStash::Inputs::MongoDB < LogStash::Inputs::Base
   def update_placeholder(mongo_collection_name, place)
     #@logger.debug("updating placeholder for #{SINCE_TABLE}_#{mongo_collection_name} to #{place}")
     since = @sqlitedb[SINCE_TABLE]
+    @logger.info("sdqsdqsdd")
     @logger.debug("new placeholder #{place} of type "+place.class.to_s)
-    since.where(:table => "#{SINCE_TABLE}_#{mongo_collection_name}").update(:place => place)
+    since.where(:table => "#{SINCE_TABLE}_#{mongo_collection_name}").update(:glide_start => place)
   end
 
   public
@@ -146,8 +149,9 @@ class LogStash::Inputs::MongoDB < LogStash::Inputs::Base
   end
 
   private
-  def build_mongo_query(user_query)
-      querymongo = { :$and => [ {@sort_on => {:$gt => @start_window_time}},
+  def build_mongo_query(user_query, glide_start)
+      querymongo = { :$and => [ {@sort_on => {:$gte => @start_window_time}},
+                                {@sort_on => {:$gte => glide_start}},
                                 {@sort_on => {:$lt => @end_window_time}},
                                 user_query ]}
     @logger.debug("Built mongo query "+querymongo.to_s)
@@ -155,16 +159,16 @@ class LogStash::Inputs::MongoDB < LogStash::Inputs::Base
   end
 
   public
-  def get_cursor_for_collection(mongodb, mongo_collection_name, sort_col, skipper, batch_size, user_query)
+  def get_cursor_for_collection(mongodb, mongo_collection_name, sort_col, glide_start, batch_size, user_query)
     @logger.debug("querying mongo collection name "+mongo_collection_name.to_s)
     @logger.debug("querying with sort column "+sort_col+ " of class "+sort_col.class.to_s)
     collection = mongodb.collection(mongo_collection_name)
     # Need to make this sort by date in object id then get the first of the series
     # db.events_20150320.find().limit(1).sort({ts:1})
     @logger.debug("querying mongo collection "+collection.to_s)
-    querymongo = build_mongo_query(user_query)
-    @logger.debug("querying mongo for "+batch_size.to_s+" documents after skipping "+skipper.to_s)
-    return collection.find(querymongo, :projection => @user_projection).sort(sort_col => 1).skip(skipper).limit(batch_size)
+    querymongo = build_mongo_query(user_query, glide_start)
+    @logger.debug("querying mongo for "+batch_size.to_s+" documents after date "+glide_start.to_s)
+    return collection.find(querymongo, :projection => @user_projection).sort(sort_col => 1).limit(batch_size)
   end
 
   public
@@ -435,11 +439,11 @@ class LogStash::Inputs::MongoDB < LogStash::Inputs::Base
             queue << event
             perfPost = perfPost + (Time.now - startPost).to_f
 
-            @collection_data[index][:last_id] += 1
+            @collection_data[index][:last_id] =  event.get('localEnd')
 
           end
           startSql = Time.now
-          # Store the skipper for this collection (in case of interrupt)
+          # Store the last seen end date for this collection (in case of interrupt)
           update_placeholder(collection_name, @collection_data[index][:last_id])
           perfSql = perfSql + ( Time.now - startSql).to_f
 
