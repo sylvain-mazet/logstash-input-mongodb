@@ -117,7 +117,41 @@ class LogStash::Inputs::MongoDB < LogStash::Inputs::Base
       return glide_start
     else
       @logger.debug("placeholder already exists, it is #{x[:glide_start]}")
-      new_start = DateTime.strptime(x[:glide_start][:glide_start],"%Y-%m-%dT%H:%M:%S")
+      @logger.debug("Place holder is of type "+x[:glide_start][:glide_start].class.to_s)
+      new_start = x[:glide_start][:glide_start]
+      if ! (new_start.is_a? DateTime)
+        begin
+          begin
+            @logger.debug(" Parsing 1")
+            new_start = DateTime.strptime(x[:glide_start][:glide_start], "%Y-%m-%d %H:%M:%S.%L")
+          rescue Exception => e
+            new_start = nil
+          end
+          if new_start.nil?
+            begin
+              @logger.debug(" Parsing 2")
+              new_start = DateTime.strptime(x[:glide_start][:glide_start], "%Y-%m-%dT%H:%M:%SZ")
+            rescue Exception => e
+              new_start = nil
+            end
+          end
+          if new_start.nil?
+            begin
+              @logger.debug(" Parsing 3")
+              new_start = DateTime.strptime(x[:glide_start][:glide_start], "%Y-%m-%d")
+            rescue Exception => e
+              new_start = nil
+            end
+          end
+          if new_start.nil?
+            begin
+              new_start = DateTime.strptime(x[:glide_start][:glide_start], "%d/%m/%Y")
+            rescue Exception => e
+              new_start = nil
+            end
+          end
+        end
+      end
       return new_start
     end
   end
@@ -126,7 +160,6 @@ class LogStash::Inputs::MongoDB < LogStash::Inputs::Base
   def update_placeholder(mongo_collection_name, place)
     #@logger.debug("updating placeholder for #{SINCE_TABLE}_#{mongo_collection_name} to #{place}")
     since = @sqlitedb[SINCE_TABLE]
-    @logger.info("sdqsdqsdd")
     @logger.debug("new placeholder #{place} of type "+place.class.to_s)
     since.where(:table => "#{SINCE_TABLE}_#{mongo_collection_name}").update(:glide_start => place)
   end

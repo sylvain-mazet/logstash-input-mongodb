@@ -25,10 +25,10 @@ Gem::Specification.new do |s|
   s.test_files = s.files.grep(%r{^(test|spec|features)/})
 
   # Special flag to let us know this is actually a logstash plugin
-  #s.metadata = { "logstash_plugin" => "true", "logstash_group" => "input" }
+  s.metadata = { "logstash_plugin" => "true", "logstash_group" => "input" }
 
   # Gem dependencies
-  s.add_runtime_dependency 'logstash-core', ">= 5.0", "< 5.6"
+  s.add_runtime_dependency 'logstash-core', ">= 5.0", "< 5.7"
   s.add_runtime_dependency 'logstash-codec-plain'
   s.add_runtime_dependency 'stud'
   s.add_runtime_dependency 'jdbc-sqlite3', '3.8.10.1'
